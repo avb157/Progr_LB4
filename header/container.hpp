@@ -38,7 +38,7 @@ public:
         pointer operator->() const { return &current->data; }
         
         iterator& operator++() {
-            current = current->next;
+            if (current) current = current->next;
             return *this;
         }
         
@@ -69,7 +69,7 @@ public:
         pointer operator->() const { return &current->data; }
         
         const_iterator& operator++() {
-            current = current->next;
+            if (current) current = current->next;
             return *this;
         }
         
@@ -89,6 +89,24 @@ public:
     
     ~custom_container() {
         clear();
+    }
+    
+    // Конструктор копирования
+    custom_container(const custom_container& other) : head(nullptr), tail(nullptr), container_size(0), alloc(other.alloc) {
+        for (const auto& item : other) {
+            push_back(item);
+        }
+    }
+    
+    // Оператор присваивания
+    custom_container& operator=(const custom_container& other) {
+        if (this != &other) {
+            clear();
+            for (const auto& item : other) {
+                push_back(item);
+            }
+        }
+        return *this;
     }
     
     void push_back(const T& value) {
@@ -131,16 +149,22 @@ public:
         ++container_size;
     }
     
+    void pop_front() {
+        if (!head) return;
+        
+        node* old_head = head;
+        head = head->next;
+        std::allocator_traits<node_allocator>::destroy(alloc, old_head);
+        std::allocator_traits<node_allocator>::deallocate(alloc, old_head, 1);
+        --container_size;
+        
+        if (!head) tail = nullptr;
+    }
+    
     void clear() {
-        node* current = head;
-        while (current) {
-            node* next = current->next;
-            std::allocator_traits<node_allocator>::destroy(alloc, current);
-            std::allocator_traits<node_allocator>::deallocate(alloc, current, 1);
-            current = next;
+        while (!empty()) {
+            pop_front();
         }
-        head = tail = nullptr;
-        container_size = 0;
     }
     
     iterator begin() { return iterator(head); }

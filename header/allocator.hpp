@@ -10,26 +10,74 @@ private:
         char* data;
         std::size_t used;
         std::size_t size;
+        std::vector<bool> allocated_flags;
         
-        memory_block(std::size_t n) : data(new char[sizeof(T) * n]), used(0), size(n) {}
-        ~memory_block() { delete[] data; }
+        memory_block(std::size_t n) : data(new char[sizeof(T) * n]), used(0), size(n), allocated_flags(n, false) {}
         
-        bool can_allocate(std::size_t n) const { return used + n <= size; }
+        ~memory_block() {
+            // Деструктор блока - освобождаем всю память
+            delete[] data;
+        }
+        
+        bool can_allocate(std::size_t n) const { 
+            return used + n <= size; 
+        }
+        
         T* allocate(std::size_t n) {
             if (!can_allocate(n)) return nullptr;
-            T* ptr = reinterpret_cast<T*>(data + used * sizeof(T));
-            used += n;
-            return ptr;
+            
+            // Находим последовательные свободные ячейки
+            for (std::size_t i = 0; i <= size - n; ++i) {
+                bool can_use = true;
+                for (std::size_t j = 0; j < n; ++j) {
+                    if (allocated_flags[i + j]) {
+                        can_use = false;
+                        break;
+                    }
+                }
+                
+                if (can_use) {
+                    for (std::size_t j = 0; j < n; ++j) {
+                        allocated_flags[i + j] = true;
+                    }
+                    used += n;
+                    return reinterpret_cast<T*>(data + i * sizeof(T));
+                }
+            }
+            return nullptr;
+        }
+        
+        void deallocate(T* ptr, std::size_t n) {
+            std::size_t offset = (reinterpret_cast<char*>(ptr) - data) / sizeof(T);
+            
+            for (std::size_t i = 0; i < n; ++i) {
+                if (offset + i < allocated_flags.size()) {
+                    allocated_flags[offset + i] = false;
+                }
+            }
+            used -= n;
+        }
+        
+        bool belongs_to_block(T* ptr) const {
+            char* ptr_char = reinterpret_cast<char*>(ptr);
+            return ptr_char >= data && ptr_char < data + size * sizeof(T);
         }
     };
     
     std::vector<memory_block*> blocks;
-    std::size_t current_block;
+    
+    memory_block* find_block(T* ptr) {
+        for (auto block : blocks) {
+            if (block->belongs_to_block(ptr)) {
+                return block;
+            }
+        }
+        return nullptr;
+    }
     
     void expand_memory(std::size_t n) {
         std::size_t new_size = (n > BlockSize) ? n : BlockSize;
         blocks.push_back(new memory_block(new_size));
-        current_block = blocks.size() - 1;
     }
     
 public:
@@ -45,7 +93,17 @@ public:
         using other = custom_allocator<U, BlockSize>;
     };
     
-    custom_allocator() : current_block(0) {
+    custom_allocator() {
+        expand_memory(BlockSize);
+    }
+    
+    custom_allocator(const custom_allocator& other) {
+        // При копировании создаем новые блоки
+        expand_memory(BlockSize);
+    }
+    
+    template<typename U>
+    custom_allocator(const custom_allocator<U, BlockSize>& other) {
         expand_memory(BlockSize);
     }
     
@@ -58,16 +116,29 @@ public:
     pointer allocate(size_type n) {
         if (n == 0) return nullptr;
         
-        if (!blocks[current_block]->can_allocate(n)) {
-            expand_memory(n);
+        // Пытаемся выделить в существующих блоках
+        for (auto block : blocks) {
+            if (block->can_allocate(n)) {
+                pointer result = block->allocate(n);
+                if (result) {
+                    return result;
+                }
+            }
         }
         
-        return blocks[current_block]->allocate(n);
+        // Если не хватило места - расширяем
+        expand_memory(n);
+        pointer result = blocks.back()->allocate(n);
+        return result;
     }
     
     void deallocate(pointer p, size_type n) {
-        // Поэлементное освобождение - в нашей реализации память не возвращается
-        // до полного уничтожения аллокатора
+        if (p == nullptr || n == 0) return;
+        
+        memory_block* block = find_block(p);
+        if (block) {
+            block->deallocate(p, n);
+        }
     }
     
     void deallocate_all() {
@@ -89,6 +160,21 @@ public:
     }
     
     size_type max_size() const {
-        return BlockSize * blocks.size();
+        size_type total = 0;
+        for (auto block : blocks) {
+            total += block->size;
+        }
+        return total;
+    }
+    
+    // Методы для совместимости
+    custom_allocator& operator=(const custom_allocator&) = delete;
+    
+    bool operator==(const custom_allocator& other) const {
+        return this == &other;
+    }
+    
+    bool operator!=(const custom_allocator& other) const {
+        return !(*this == other);
     }
 };
